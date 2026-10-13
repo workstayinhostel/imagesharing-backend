@@ -1,7 +1,7 @@
 {
-  "name": "sharify-backend",
+  "name": "sharefy-backend",
   "version": "1.0.0",
-  "description": "Sharify API - uncompressed multi-GB photo/video sharing on Cloudflare R2 + Supabase",
+  "description": "Sharefy API - uncompressed multi-GB photo/video sharing on Cloudflare R2 + Supabase",
   "main": "server.js",
   "private": true,
   "engines": {

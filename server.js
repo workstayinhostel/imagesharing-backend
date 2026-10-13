@@ -31,7 +31,7 @@ app.use(
   })
 );
 
-app.get('/health', (req, res) => res.json({ ok: true, service: 'sharify-api' }));
+app.get('/health', (req, res) => res.json({ ok: true, service: 'sharefy-api' }));
 
 app.use('/api/rooms', require('./routes/roomRoutes'));
 app.use('/api/upload', require('./routes/uploadRoutes'));
@@ -41,5 +41,5 @@ app.use(notFound);
 app.use(errorHandler);
 
 app.listen(env.port, '0.0.0.0', () => {
-  console.log(`[sharify] API listening on :${env.port}`);
+  console.log(`[sharefy] API listening on :${env.port}`);
 });

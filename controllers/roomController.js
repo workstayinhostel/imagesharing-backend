@@ -1,4 +1,5 @@
 const jwt = require('jsonwebtoken');
+const archiver = require('archiver');
 const supabase = require('../config/supabase');
 const env = require('../config/env');
 const AppError = require('../utils/AppError');
@@ -7,9 +8,14 @@ const safeCompare = require('../utils/safeCompare');
 const r2Service = require('../services/r2Service');
 const roomService = require('../services/roomService');
 const { logEvent } = require('../services/logService');
+const consoleLog = require('../utils/consoleLog');
 
 const SUFFIX_RE = /^[A-Za-z0-9]{1,12}$/;
 const PIN_RE = /^[A-Za-z0-9]{3,10}$/; // 3-10 alphanumeric, no spaces
+const ARCHIVE_TICKET_TTL_MS = 10 * 60 * 1000;
+const MAX_ARCHIVE_FILES = 1000;
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const ARCHIVE_FILENAME_RE = /[<>:"/\\|?*\u0000-\u001f]/g;
 
 const normalizeCode = (raw) => {
   const code = String(raw || '').replace(/\s+/g, '').toUpperCase();
@@ -29,6 +35,48 @@ const fileDto = (f) => ({
   category: f.category,
   uploadedAt: f.uploaded_at,
 });
+
+function safeArchiveFilename(name) {
+  const clean = String(name || 'sharefy-files')
+    .replace(ARCHIVE_FILENAME_RE, '-')
+    .replace(/[. ]+$/g, '')
+    .trim()
+    .replace(/\.zip$/i, '')
+    .trim()
+    .slice(0, 120);
+  return `${clean || 'sharefy-files'}.zip`;
+}
+
+function safeArchiveEntryNames(files) {
+  const used = new Set();
+  return files.map((file) => {
+    const basename = String(file.file_name || 'file')
+      .replace(/\\/g, '/')
+      .split('/')
+      .pop()
+      .replace(ARCHIVE_FILENAME_RE, '-')
+      .replace(/^\.+|[. ]+$/g, '') || 'file';
+    const dot = basename.lastIndexOf('.');
+    const stem = dot > 0 ? basename.slice(0, dot) : basename;
+    const extension = dot > 0 ? basename.slice(dot) : '';
+    let name = basename;
+    let suffix = 2;
+    while (used.has(name.toLowerCase())) {
+      name = `${stem} (${suffix})${extension}`;
+      suffix += 1;
+    }
+    used.add(name.toLowerCase());
+    return name;
+  });
+}
+
+function archiveContentDisposition(filename) {
+  const fallback = filename.replace(/[^\x20-\x7e]|["\\]/g, '_');
+  const encoded = encodeURIComponent(filename).replace(/['()*]/g, (character) =>
+    `%${character.charCodeAt(0).toString(16).toUpperCase()}`
+  );
+  return `attachment; filename="${fallback}"; filename*=UTF-8''${encoded}`;
+}
 
 /** POST /api/rooms/create  { suffix, pin } -> room RM<suffix>, caller becomes host */
 exports.createRoom = asyncHandler(async (req, res) => {
@@ -143,6 +191,186 @@ exports.getDownloadUrl = asyncHandler(async (req, res) => {
   if (!file) throw new AppError(404, 'FILE_NOT_FOUND', 'File not found.');
   const url = await r2Service.presignDownload(file.file_key, file.file_name);
   res.json({ url, fileName: file.file_name });
+});
+
+/** POST /api/rooms/:code/archive-downloads -> short-lived ticket for a streamed ZIP. */
+exports.createArchiveDownload = asyncHandler(async (req, res) => {
+  const suppliedIds = req.body?.fileIds;
+  if (!Array.isArray(suppliedIds) || suppliedIds.length === 0) {
+    throw new AppError(400, 'NO_FILES', 'Choose at least one file to add to the ZIP.');
+  }
+  if (suppliedIds.length > MAX_ARCHIVE_FILES) {
+    throw new AppError(400, 'TOO_MANY_FILES', `A ZIP can contain at most ${MAX_ARCHIVE_FILES} files.`);
+  }
+  if (suppliedIds.some((id) => typeof id !== 'string' || !UUID_RE.test(id))) {
+    throw new AppError(400, 'INVALID_FILE_ID', 'The ZIP contains an invalid file selection.');
+  }
+  const fileIds = [...new Set(suppliedIds)];
+  const fileName = safeArchiveFilename(req.body?.fileName);
+  const now = new Date().toISOString();
+  const expiresAt = new Date(Date.now() + ARCHIVE_TICKET_TTL_MS).toISOString();
+
+  const { error: cleanupError } = await supabase
+    .from('archive_downloads')
+    .delete()
+    .lt('expires_at', now);
+  if (cleanupError) throw cleanupError;
+
+  const { data, error } = await supabase
+    .from('archive_downloads')
+    .insert({ room_code: req.room.roomCode, file_ids: fileIds, file_name: fileName, expires_at: expiresAt })
+    .select('id')
+    .single();
+  if (error) throw error;
+  res.json({ ticketId: data.id });
+});
+
+/** GET /api/rooms/:code/archive-downloads/:ticketId -> one-use streamed ZIP attachment. */
+exports.downloadArchive = asyncHandler(async (req, res) => {
+  const { code, ticketId } = req.params;
+  if (!UUID_RE.test(ticketId)) throw new AppError(404, 'ARCHIVE_NOT_FOUND', 'This ZIP download is unavailable.');
+  const roomCode = String(code || '').toUpperCase();
+  const now = new Date().toISOString();
+  const { data: ticket, error: ticketError } = await supabase
+    .from('archive_downloads')
+    .select('id, room_code, file_ids, file_name, expires_at')
+    .eq('id', ticketId)
+    .eq('room_code', roomCode)
+    .is('consumed_at', null)
+    .gt('expires_at', now)
+    .maybeSingle();
+  if (ticketError) throw ticketError;
+  if (!ticket) throw new AppError(410, 'ARCHIVE_EXPIRED', 'This ZIP download link expired or has already been used. Start the ZIP download again.');
+
+  const { data: claimed, error: claimError } = await supabase
+    .from('archive_downloads')
+    .update({ consumed_at: now })
+    .eq('id', ticket.id)
+    .is('consumed_at', null)
+    .gt('expires_at', now)
+    .select('id')
+    .maybeSingle();
+  if (claimError) throw claimError;
+  if (!claimed) throw new AppError(410, 'ARCHIVE_EXPIRED', 'This ZIP download link expired or has already been used. Start the ZIP download again.');
+
+  const removeTicket = async () => {
+    const { error } = await supabase.from('archive_downloads').delete().eq('id', ticket.id);
+    if (error) consoleLog('warn', 'archive', `could not remove ticket ${ticket.id}: ${error.message}`);
+  };
+
+  try {
+    const { data: room, error: roomError } = await supabase
+      .from('rooms')
+      .select('created_at')
+      .eq('room_code', roomCode)
+      .maybeSingle();
+    if (roomError) throw roomError;
+    if (!room || roomService.expiresAtFor(room.created_at).getTime() <= Date.now()) {
+      throw new AppError(410, 'ROOM_EXPIRED', 'This room has expired.');
+    }
+
+    const fileIds = Array.isArray(ticket.file_ids) ? ticket.file_ids : [];
+    if (!fileIds.length || fileIds.length > MAX_ARCHIVE_FILES) {
+      throw new AppError(400, 'INVALID_ARCHIVE', 'This ZIP selection is invalid. Start the download again.');
+    }
+    const { data: roomFiles, error: filesError } = await supabase
+      .from('room_files')
+      .select('id, file_key, file_name')
+      .eq('room_code', roomCode)
+      .in('id', fileIds);
+    if (filesError) throw filesError;
+    if (!roomFiles || roomFiles.length !== fileIds.length) {
+      throw new AppError(404, 'FILE_NOT_FOUND', 'One or more selected files are no longer available.');
+    }
+    const filesById = new Map(roomFiles.map((file) => [file.id, file]));
+    const orderedFiles = fileIds.map((id) => filesById.get(id));
+    const entryNames = safeArchiveEntryNames(orderedFiles);
+
+    const abortController = new AbortController();
+    let activeBody;
+    let disconnected = false;
+    let streamFailed = false;
+    const archive = archiver('zip', { zlib: { level: 0 } });
+    const abortOnDisconnect = () => {
+      if (res.writableFinished) return;
+      disconnected = true;
+      abortController.abort();
+      activeBody?.destroy();
+      archive.destroy();
+    };
+    const rejectArchiveError = (error) => {
+      if (disconnected || streamFailed) return;
+      streamFailed = true;
+      consoleLog('error', 'archive', `${roomCode} ${ticket.file_name}: ${error.message}`);
+      if (res.headersSent) res.destroy(error);
+      else res.status(500).json({ error: { code: 'ARCHIVE_FAILED', message: 'Could not prepare this ZIP. Please try again.' } });
+      abortController.abort();
+      activeBody?.destroy();
+    };
+    archive.on('warning', rejectArchiveError);
+    archive.on('error', rejectArchiveError);
+    res.on('close', abortOnDisconnect);
+
+    const appendEntry = (body, name) => new Promise((resolve, reject) => {
+      const cleanup = () => {
+        archive.off('entry', onEntry);
+        archive.off('error', onArchiveError);
+        archive.off('warning', onArchiveError);
+        body.off('error', onBodyError);
+      };
+      const onEntry = (entry) => {
+        if (entry.name !== name) return;
+        cleanup();
+        resolve();
+      };
+      const onArchiveError = (error) => {
+        cleanup();
+        reject(error);
+      };
+      const onBodyError = (error) => {
+        cleanup();
+        reject(error);
+      };
+      archive.on('entry', onEntry);
+      archive.once('error', onArchiveError);
+      archive.once('warning', onArchiveError);
+      body.once('error', onBodyError);
+      archive.append(body, { name });
+    });
+
+    try {
+      const firstObject = await r2Service.getObjectStream(orderedFiles[0].file_key, abortController.signal);
+      if (!firstObject.Body) throw new Error(`Storage returned no data for "${orderedFiles[0].file_name}".`);
+      activeBody = firstObject.Body;
+
+      res.status(200);
+      res.setHeader('Content-Type', 'application/zip');
+      res.setHeader('Content-Disposition', archiveContentDisposition(ticket.file_name));
+      res.setHeader('Cache-Control', 'private, no-store');
+      res.setHeader('X-Content-Type-Options', 'nosniff');
+      res.setHeader('X-Accel-Buffering', 'no');
+      archive.pipe(res);
+      await appendEntry(activeBody, entryNames[0]);
+
+      for (let index = 1; index < orderedFiles.length; index += 1) {
+        const file = orderedFiles[index];
+        const object = await r2Service.getObjectStream(file.file_key, abortController.signal);
+        if (!object.Body) throw new Error(`Storage returned no data for "${file.file_name}".`);
+        activeBody = object.Body;
+        await appendEntry(activeBody, entryNames[index]);
+      }
+      activeBody = null;
+      await archive.finalize();
+    } catch (error) {
+      if (!disconnected) rejectArchiveError(error);
+    } finally {
+      res.off('close', abortOnDisconnect);
+      await removeTicket();
+    }
+  } catch (error) {
+    await removeTicket();
+    throw error;
+  }
 });
 
 /** DELETE /api/rooms/:code/files/:fileId  (host only) */

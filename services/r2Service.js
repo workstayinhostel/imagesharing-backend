@@ -92,6 +92,10 @@ async function headObject(key) {
   return r2.send(new HeadObjectCommand({ Bucket: bucket, Key: key }));
 }
 
+async function getObjectStream(key, abortSignal) {
+  return r2.send(new GetObjectCommand({ Bucket: bucket, Key: key }), { abortSignal });
+}
+
 /* ---------------- multipart ---------------- */
 
 async function createMultipart(key, contentType) {
@@ -245,6 +249,7 @@ module.exports = {
   completeMultipart,
   abortMultipart,
   abortStaleMultipartUploads,
+  getObjectStream,
   presignDownload,
   presignPreview,
 };

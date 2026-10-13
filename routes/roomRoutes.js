@@ -19,6 +19,13 @@ const previewLimiter = rateLimit({
   legacyHeaders: false,
   message: { error: { code: 'RATE_LIMITED', message: 'Too many preview requests. Wait a minute and try again.' } },
 });
+const archiveTicketLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  limit: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: { code: 'RATE_LIMITED', message: 'Too many ZIP requests. Wait a minute and try again.' } },
+});
 
 router.post('/create', credentialLimiter, c.createRoom);
 router.post('/join', credentialLimiter, c.joinRoom);
@@ -28,6 +35,8 @@ router.get('/:code', roomAuth, c.getRoom);
 router.delete('/:code', roomAuth, c.deleteRoom);
 router.get('/:code/files/:fileId/download', roomAuth, c.getDownloadUrl);
 router.get('/:code/files/:fileId/preview', roomAuth, previewLimiter, image.preview);
+router.post('/:code/archive-downloads', roomAuth, archiveTicketLimiter, c.createArchiveDownload);
+router.get('/:code/archive-downloads/:ticketId', c.downloadArchive);
 router.delete('/:code/files/:fileId', roomAuth, c.deleteFile);
 
 module.exports = router;

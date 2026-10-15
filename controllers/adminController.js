@@ -108,13 +108,15 @@ exports.deleteRoom = asyncHandler(async (req, res) => {
   res.json({ ok: true, ...result });
 });
 
-/** POST /api/admin/purge-all { confirm: "PURGE ALL" } -> wipe every room and empty the bucket */
+/** POST /api/admin/purge-all { confirm: "PURGE ALL" } -> wipe room storage, preserving the Android app */
 exports.purgeAll = asyncHandler(async (req, res) => {
   if (req.body?.confirm !== 'PURGE ALL') {
     throw new AppError(400, 'CONFIRM_REQUIRED', 'Type PURGE ALL to confirm.');
   }
-  const keys = await r2Service.listKeys(undefined);
-  await r2Service.deleteKeys(keys);
+  const allKeys = await r2Service.listKeys(undefined);
+  const appKey = 'Application/sahrify-android.apk';
+  const keysToDelete = allKeys.filter((key) => key !== appKey);
+  await r2Service.deleteKeys(keysToDelete);
   const abortedUploads = await r2Service.abortStaleMultipartUploads(0);
   await storageGuard.clearAll();
 
@@ -123,6 +125,6 @@ exports.purgeAll = asyncHandler(async (req, res) => {
   const { error: rErr } = await supabase.from('rooms').delete().not('id', 'is', null);
   if (rErr) throw rErr;
 
-  await logEvent('PURGE_ALL', `Admin purged all storage (${keys.length} objects, ${abortedUploads} pending uploads aborted).`);
-  res.json({ ok: true, deletedObjects: keys.length, abortedUploads });
+  await logEvent('PURGE_ALL', `Admin purged room storage (${keysToDelete.length} objects, Android APK preserved, ${abortedUploads} pending uploads aborted).`);
+  res.json({ ok: true, deletedObjects: keysToDelete.length, preservedObjects: allKeys.length - keysToDelete.length, abortedUploads });
 });

@@ -5,8 +5,12 @@ const rateLimit = require('express-rate-limit');
 const env = require('./config/env');
 const { notFound, errorHandler } = require('./middleware/errorHandler');
 const requestLogger = require('./middleware/requestLogger');
+const { cleanupExpiredRooms } = require('./services/roomService');
+const r2Service = require('./services/r2Service');
 
 const app = express();
+const ROOM_CLEANUP_INTERVAL_MS = 5 * 60 * 1000;
+const STALE_UPLOAD_CLEANUP_INTERVAL_MS = 60 * 60 * 1000;
 app.set('trust proxy', 1); // Render/Vercel sit behind a proxy: needed for real client IPs
 
 app.use(requestLogger);
@@ -42,6 +46,38 @@ app.use('/api/downloads', require('./routes/downloadRoutes'));
 
 app.use(notFound);
 app.use(errorHandler);
+
+let roomCleanupRunning = false;
+async function runRoomCleanup() {
+  if (roomCleanupRunning) return;
+  roomCleanupRunning = true;
+  try {
+    const { deletedRooms, failedRooms } = await cleanupExpiredRooms();
+    if (deletedRooms || failedRooms) {
+      console.log(`[sharefy] Expired room cleanup: ${deletedRooms} deleted, ${failedRooms} failed.`);
+    }
+  } catch (error) {
+    console.error('[sharefy] Expired room cleanup failed:', error);
+  } finally {
+    roomCleanupRunning = false;
+  }
+}
+
+async function runStaleUploadCleanup() {
+  try {
+    const abortedUploads = await r2Service.abortStaleMultipartUploads();
+    if (abortedUploads) {
+      console.log(`[sharefy] Aborted ${abortedUploads} stale multipart upload(s).`);
+    }
+  } catch (error) {
+    console.error('[sharefy] Stale multipart upload cleanup failed:', error);
+  }
+}
+
+runRoomCleanup();
+setInterval(runRoomCleanup, ROOM_CLEANUP_INTERVAL_MS);
+runStaleUploadCleanup();
+setInterval(runStaleUploadCleanup, STALE_UPLOAD_CLEANUP_INTERVAL_MS);
 
 app.listen(env.port, '0.0.0.0', () => {
   console.log(`[sharefy] API listening on :${env.port}`);

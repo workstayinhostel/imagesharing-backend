@@ -103,7 +103,10 @@ exports.completeUpload = asyncHandler(async (req, res) => {
   }
 
   const reservation = await storageGuard.getReservation(key);
-  if (reservation && reservation.roomCode !== roomCode) {
+  if (!reservation) {
+    throw new AppError(400, 'UPLOAD_RESERVATION_MISSING', 'This upload reservation expired or is invalid. Please start the upload again.');
+  }
+  if (reservation.roomCode !== roomCode) {
     throw new AppError(403, 'KEY_MISMATCH', 'This upload does not belong to your room.');
   }
 
@@ -116,12 +119,17 @@ exports.completeUpload = asyncHandler(async (req, res) => {
   consoleLog('info', 'upload', `stored ${roomCode} ${formatLogBytes(actualSize)}`);
 
   const fail = async (code, message) => {
-    await r2Service.deleteKey(key).catch(() => {});
+    try {
+      await r2Service.deleteKey(key);
+    } catch (error) {
+      console.error(`[upload] Failed to remove rejected object ${key}:`, error);
+      throw error;
+    }
     await storageGuard.release(key);
     throw new AppError(400, code, message);
   };
 
-  if (reservation && actualSize !== reservation.bytes) {
+  if (actualSize !== reservation.bytes) {
     await fail('SIZE_MISMATCH', 'The uploaded file size did not match. Please upload it again.');
   }
   if (await storageGuard.isOverCap()) {
@@ -145,7 +153,12 @@ exports.completeUpload = asyncHandler(async (req, res) => {
     .select('id, file_name, file_size_bytes, file_type, category, uploaded_at')
     .single();
   if (error) {
-    await r2Service.deleteKey(key).catch(() => {});
+    try {
+      await r2Service.deleteKey(key);
+    } catch (cleanupError) {
+      console.error(`[upload] Failed to remove object after metadata insert failed (${key}):`, cleanupError);
+      throw cleanupError;
+    }
     await storageGuard.release(key);
     throw error;
   }

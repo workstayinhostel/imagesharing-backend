@@ -17,6 +17,12 @@ if (missing.length) {
   process.exit(1);
 }
 
+const MAX_STORAGE_CAP_BYTES = 9_500_000_000;
+const configuredStorageCapBytes = Number(process.env.STORAGE_CAP_BYTES);
+const storageCapBytes = Number.isSafeInteger(configuredStorageCapBytes) && configuredStorageCapBytes > 0
+  ? Math.min(configuredStorageCapBytes, MAX_STORAGE_CAP_BYTES)
+  : MAX_STORAGE_CAP_BYTES;
+
 module.exports = {
   port: Number(process.env.PORT) || 4000,
   clientOrigins: (process.env.CLIENT_ORIGIN || 'http://localhost:5173')
@@ -35,8 +41,8 @@ module.exports = {
     secretAccessKey: process.env.R2_SECRET_ACCESS_KEY,
     bucket: process.env.R2_BUCKET_NAME,
   },
-  // Hard cap: 9.5 GB (decimal), safely under Cloudflare's 10 GB free tier
-  storageCapBytes: Number(process.env.STORAGE_CAP_BYTES) || 9_500_000_000,
+  // STORAGE_CAP_BYTES may lower the limit, but can never raise it above 9.5 GB.
+  storageCapBytes,
   roomTtlMs: 48 * 60 * 60 * 1000,
   partSizeBytes: 32 * 1024 * 1024, // 32 MiB multipart parts
   maxFilesPerInit: 25,

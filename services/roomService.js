@@ -48,4 +48,28 @@ async function expireRoom(roomCode) {
   return result;
 }
 
-module.exports = { deleteRoomCascade, expireRoom, roomPrefix, expiresAtFor };
+/** Deletes rooms whose 48-hour lifetime has elapsed. Individual failures do not block other rooms. */
+async function cleanupExpiredRooms() {
+  const cutoff = new Date(Date.now() - env.roomTtlMs).toISOString();
+  const { data: rooms, error } = await supabase
+    .from('rooms')
+    .select('room_code')
+    .lte('created_at', cutoff);
+  if (error) throw new Error(`Failed to find expired rooms: ${error.message}`);
+
+  let deletedRooms = 0;
+  let failedRooms = 0;
+  for (const { room_code: roomCode } of rooms || []) {
+    try {
+      await expireRoom(roomCode);
+      deletedRooms += 1;
+    } catch (error) {
+      failedRooms += 1;
+      console.error(`[sharefy] Failed to clean up expired room ${roomCode}:`, error);
+    }
+  }
+
+  return { deletedRooms, failedRooms };
+}
+
+module.exports = { deleteRoomCascade, expireRoom, cleanupExpiredRooms, roomPrefix, expiresAtFor };

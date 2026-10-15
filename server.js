@@ -33,6 +33,7 @@ app.use(
 );
 
 app.get('/health', (req, res) => res.json({ ok: true, service: 'sharefy-api' }));
+app.get('/', (req, res) => res.status(200).json({ message: 'Sharefy is awake and running.' }));
 
 app.use('/api/rooms', require('./routes/roomRoutes'));
 app.use('/api/upload', require('./routes/uploadRoutes'));

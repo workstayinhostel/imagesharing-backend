@@ -37,6 +37,7 @@ app.get('/health', (req, res) => res.json({ ok: true, service: 'sharefy-api' }))
 app.use('/api/rooms', require('./routes/roomRoutes'));
 app.use('/api/upload', require('./routes/uploadRoutes'));
 app.use('/api/admin', require('./routes/adminRoutes'));
+app.use('/api/downloads', require('./routes/downloadRoutes'));
 
 app.use(notFound);
 app.use(errorHandler);

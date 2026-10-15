@@ -14,11 +14,12 @@ app.use(helmet());
 app.use(
   cors({
     origin(origin, cb) {
-      // allow same-origin/no-origin (curl, health checks) and the configured frontends
+      // Native mobile apps and server-to-server requests may not send an Origin.
       if (!origin || env.clientOrigins.includes(origin)) return cb(null, true);
       return cb(new Error('Origin not allowed by CORS'));
     },
-    methods: ['GET', 'POST', 'DELETE', 'OPTIONS'],
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization'],
   })
 );
 app.use(express.json({ limit: '2mb' })); // JSON only: file bytes never pass through this server

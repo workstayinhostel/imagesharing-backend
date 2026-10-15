@@ -35,6 +35,7 @@ router.get('/:code', roomAuth, c.getRoom);
 router.delete('/:code', roomAuth, c.deleteRoom);
 router.get('/:code/files/:fileId/download', roomAuth, c.getDownloadUrl);
 router.get('/:code/files/:fileId/preview', roomAuth, previewLimiter, image.preview);
+router.get('/:code/files/:fileId/metadata', roomAuth, previewLimiter, image.metadata);
 router.post('/:code/archive-downloads', roomAuth, archiveTicketLimiter, c.createArchiveDownload);
 router.get('/:code/archive-downloads/:ticketId', c.downloadArchive);
 router.delete('/:code/files/:fileId', roomAuth, c.deleteFile);

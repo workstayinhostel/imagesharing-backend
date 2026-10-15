@@ -126,7 +126,7 @@ exports.createRoom = asyncHandler(async (req, res) => {
 
 /** POST /api/rooms/join  { roomId, pin } */
 exports.joinRoom = asyncHandler(async (req, res) => {
-  const { roomId, pin } = req.body || {};
+  const { roomId, pin, hostToken } = req.body || {};
   if (!roomId || !pin) throw new AppError(400, 'MISSING_FIELDS', 'Enter both the room ID and the PIN.');
   const roomCode = normalizeCode(roomId);
 
@@ -147,10 +147,23 @@ exports.joinRoom = asyncHandler(async (req, res) => {
     throw new AppError(410, 'ROOM_EXPIRED', 'This room expired after 48 hours.');
   }
 
-  await logEvent('MEMBER_JOINED', `A member joined ${roomCode}.`);
+  let role = 'guest';
+  if (typeof hostToken === 'string' && hostToken) {
+    try {
+      const payload = jwt.verify(hostToken, env.jwtSecret);
+      if (payload.role === 'host' && payload.roomCode === roomCode) role = 'host';
+    } catch {
+      // An invalid or expired saved host token only prevents host restoration;
+      // a correct room PIN can still join the room as a guest.
+    }
+  }
+
+  const eventType = role === 'host' ? 'HOST_REJOINED' : 'MEMBER_JOINED';
+  const description = `${role === 'host' ? 'The host' : 'A member'} joined ${roomCode}.`;
+  await logEvent(eventType, description);
   res.json({
-    token: issueToken(roomCode, 'guest', expiresAt),
-    room: { roomCode, role: 'guest', createdAt: room.created_at, expiresAt: expiresAt.toISOString() },
+    token: issueToken(roomCode, role, expiresAt),
+    room: { roomCode, role, createdAt: room.created_at, expiresAt: expiresAt.toISOString() },
   });
 });
 
